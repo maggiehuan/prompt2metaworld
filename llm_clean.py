@@ -14,6 +14,8 @@ API_KEY = os.environ.get("OPENAI_API_KEY")
 API_ENDPOINT = f"https://gcrgpt4aoai5c.openai.azure.com/openai/deployments/{model_choice}/chat/completions?api-version=2023-03-15-preview"
 headers = {'Content-Type': 'application/json', 'api-key': API_KEY}
 max_wait_gpt4_time = 40
+save_path = "/home/ziyu/code/side_codes/Dynamic_model/Prompt2meta/try.json"
+
 
 def reset(self):
     pass
@@ -102,6 +104,8 @@ if __name__ == "__main__":
             response = requests.post(API_ENDPOINT, json=get_first_input(obs=obs), headers=headers)
             llm_output = response.json()
             print(llm_output)
+            with open(save_path, "w") as file:
+                json.dump(response.json(), file)
             if 'error' in llm_output:
                 message = llm_output['error']['message']
                 # print(message)
@@ -128,6 +132,12 @@ if __name__ == "__main__":
             response = requests.post(API_ENDPOINT, json=get_input(obs=observation,action=action), headers=headers)
             llm_output = response.json()
             print(llm_output)
+            # I want to save the response.json() to the same json file whenever I get a new response.json()
+            with open(save_path, "w") as file:
+                json.dump(response.json(), file)
+
+            # with open(save_path, "w") as file:
+            #     json.dump(response.json(), file)
             if 'error' in llm_output:
                 message = llm_output['error']['message']
                 # print(message)
@@ -139,7 +149,10 @@ if __name__ == "__main__":
                 action_list = []
                 for i in action_str.split('Output: [')[1].split('],')[0].split(','):
                     i = i.replace(']', '').strip()
-                    if i.isspace()==True :
+                    #i = i.replace('\n', '').strip()
+                    # 如果遇到\n就停止
+                    # TODO 有个可能出现的bug需要修复
+                    if i.isspace('\n')==True :
                         i = i.strip()
                         action_list.append(float(i))
                     else:
