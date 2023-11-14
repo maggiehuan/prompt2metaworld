@@ -2,7 +2,7 @@ import openai
 import os
 import requests
 import json
-from prompt_meta import demo_prompt, system_prompt, new_task_prompt, interact_prompt
+from prompt_cot import demo_prompt, system_prompt, new_task_prompt, interact_prompt, CoT_prompt, cot_prompt
 import numpy as np
 from mw import make
 import time
@@ -21,15 +21,12 @@ def reset(self):
     pass
 
 
-def get_input(obs, action):
+def get_input(obs, action, history_obs, count, pred_obs):
     input_data = {
         "messages": [  
         {"role": "system", "content": system_prompt},  
         {"role": "assistant", "content": demo_prompt},
         {"role": "user", "content": new_task_prompt},
-        # {"role": "system", "content": "1"},  
-        # {"role": "assistant", "content": "1"},
-        # {"role": "user", "content": "1"},
     ],  
     "max_tokens": 500,
     "temperature": 0.7,
@@ -37,9 +34,15 @@ def get_input(obs, action):
 
     obs = np.array(obs)
     action = np.array(action)
-    interact_prompt_in = interact_prompt.format(current_observation = obs, previous_action = action)
-    add_line = {"role": "user", "content": interact_prompt_in}
-    input_data["messages"].append(add_line)
+    if count % 2 == 0:
+        interact_prompt_in = interact_prompt.format(previous_history = history_obs, current_observation = obs, previous_action = action)
+        add_line = {"role": "user", "content": interact_prompt_in}
+        input_data["messages"].append(add_line)
+    else:
+        interact_prompt_in = CoT_prompt.format(predicted_observation = pred_obs, real_observation = obs)
+        interact_prompt_in = cot_prompt.format(observation = obs)
+        add_line = {"role": "user", "content": interact_prompt_in}
+        input_data["messages"].append(add_line)
     return input_data
     # obs = np.array(obs)
     # action = np.array(action)
@@ -59,7 +62,7 @@ def get_first_input(obs):
         {"role": "user", "content": new_task_prompt_new},
     ],  
     "max_tokens": 500,
-    "temperature": 0.7,
+    "temperature": 0,
 }
     return input_data
     
@@ -88,80 +91,161 @@ def interact(llm_output):
     action = np.array(action_list)
     return action
 
+
+def process_llm_output(response, save_path, max_wait_gpt4_time, history_obs, time_step, train_env, count):
+    llm_output = response.json()
+    print(llm_output)
+
+    with open(save_path, "w") as file:
+        json.dump(llm_output, file)
+
+    if 'error' in llm_output:
+        message = llm_output['error']['message']
+        sleep_time = int(re.findall(r'Please retry after (\w+) second', message)[0])
+        sleep_time = min(sleep_time, max_wait_gpt4_time)
+        time.sleep(sleep_time + 1.0)
+    elif count % 2 == 0 :
+        action_str = llm_output['choices'][0]['message']['content']
+        action_list = [float(i.strip()) for i in action_str.split('The predicted current action is [')[1].split('],')[0].split(',') if i.strip()]
+        predicted_observation = [float(i.strip()) for i in action_str.split('The predicted next observation is [')[1].split('].')[0].split(',') if i.strip()]
+        action = np.array(action_list)
+        predicted_observation = np.array(predicted_observation)
+        history_obs = history_obs[-20:]
+        history_obs.append(predicted_observation)
+        observation = np.array(time_step.observation)
+        time_step = train_env.step(action)
+        count += 1
+    else:
+        count += 1
+
+    return action, history_obs, count, observation, time_step
+
     
 if __name__ == "__main__":
-    train_env = make(name='door-close', frame_stack=3, action_repeat=2, seed=1,
+    train_env = make(name='door-open', frame_stack=3, action_repeat=2, seed=1,
                 train=True, device_id=-1)
     time_step = train_env.reset()
  
-# TODO 这里交互逻辑有点怪，应该是先拿第一个obs，然后进入llm拿action，action输入envs再拿下一个obs，然后这个obs和action一起进入llm得到下一个obs
-# TODO 也许也可以再封装一下
     count = 0
-    while not time_step.last() or time_step['success'] == 1:
-        if  count == 0:
-            observation = time_step.observation
-            obs = np.array(observation)
-            response = requests.post(API_ENDPOINT, json=get_first_input(obs=obs), headers=headers)
-            llm_output = response.json()
-            print(llm_output)
-            with open(save_path, "w") as file:
-                json.dump(response.json(), file)
-            if 'error' in llm_output:
-                message = llm_output['error']['message']
-                # print(message)
-                sleep_time = int(re.findall(r'Please retry after (\w+) second', message)[0])
-                sleep_time = min(sleep_time, max_wait_gpt4_time)
-                time.sleep(sleep_time + 1.0)
-            else:
-                action_str = llm_output['choices'][0]['message']['content']
-                action_list = []
-                for i in action_str.split('Output: [')[1].split('],')[0].split(','):
-                    i = i.replace(']', '').strip()
-                    if i.isspace()==True :
-                        i = i.strip()
-                        action_list.append(float(i))
-                    else:
-                        action_list.append(float(i))
-                action = np.array(action_list)
-                time_step = train_env.step(action)
-                observation = np.array(time_step.observation)
-                count += 1
-    
-        else:
-            observation = time_step.observation
-            response = requests.post(API_ENDPOINT, json=get_input(obs=observation,action=action), headers=headers)
-            llm_output = response.json()
-            print(llm_output)
-            # I want to save the response.json() to the same json file whenever I get a new response.json()
-            with open(save_path, "w") as file:
-                json.dump(response.json(), file)
+    history_obs = []
 
-            # with open(save_path, "w") as file:
-            #     json.dump(response.json(), file)
-            if 'error' in llm_output:
-                message = llm_output['error']['message']
-                # print(message)
-                sleep_time = int(re.findall(r'Please retry after (\w+) second', message)[0])
-                sleep_time = min(sleep_time, max_wait_gpt4_time)
-                time.sleep(sleep_time + 1.0)
-            else:
-                action_str = llm_output['choices'][0]['message']['content']
-                action_list = []
-                for i in action_str.split('Output: [')[1].split('],')[0].split(','):
-                    i = i.replace(']', '').strip()
-                    #i = i.replace('\n', '').strip()
-                    # 如果遇到\n就停止
-                    # TODO 有个可能出现的bug需要修复
-                    if i.isspace('\n')==True :
-                        i = i.strip()
-                        action_list.append(float(i))
-                    else:
-                        action_list.append(float(i))
-                action = np.array(action_list)
-                time_step = train_env.step(action)
-                observation = time_step.observation
-                observation = np.array(observation)
-                count += 1
+    while not time_step.last() or time_step['success'] == 1 or count > 100:
+        observation = np.array(time_step.observation)
+        if count == 0:
+            response = requests.post(API_ENDPOINT, json=get_first_input(obs=observation), headers=headers)
+        else:
+            response = requests.post(API_ENDPOINT, json=get_input(obs=observation, action=action, history_obs = history_obs, count = count, pred_obs= predicted_observation), headers=headers)
+        llm_output = response.json()
+        print(llm_output)
+
+        with open(save_path, "w") as file:
+            json.dump(llm_output, file)
+
+        if 'error' in llm_output:
+            message = llm_output['error']['message']
+            sleep_time = int(re.findall(r'Please retry after (\w+) second', message)[0])
+            sleep_time = min(sleep_time, max_wait_gpt4_time)
+            time.sleep(sleep_time + 1.0)
+        elif count % 2 == 0:
+            action_str = llm_output['choices'][0]['message']['content']
+            action_list = [float(i.strip()) for i in action_str.split('The predicted current action is [')[1].split('],')[0].split(',') if i.strip()]
+            #predicted_observation = [float(i.strip()) for i in action_str.split('The predicted next observation is [')[1].split('].')[0].split(',') if i.strip()]
+            predicted_observations = []
+            for i in action_str.split('The predicted next observation is [')[1].split('].')[0].split(','):
+                i = i.replace(']', '').strip()
+                if i.isspace()==True :
+                    i = i.strip()
+                    predicted_observation.append(float(i))
+                else:
+                    predicted_observation.append(float(i))
+            
+            action = np.array(action_list)
+            observation = np.array(time_step.observation)
+            predicted_observation = np.array(predicted_observation)
+            history_obs.append(observation)
+            history_obs = history_obs[-10:]
+            time_step = train_env.step(action)
+            count += 1
+        else:
+            count += 1
+
+
+
+    # count = 0
+    # while not time_step.last() or time_step['success'] == 1 or count > 100:
+    #     if  count == 0:
+    #         observation = time_step.observation
+    #         obs = np.array(observation)
+    #         response = requests.post(API_ENDPOINT, json=get_first_input(obs=obs), headers=headers)
+    #         llm_output = response.json()
+    #         print(llm_output)
+    #         with open(save_path, "w") as file:
+    #             json.dump(response.json(), file)
+    #         if 'error' in llm_output:
+    #             message = llm_output['error']['message']
+    #             # print(message)
+    #             sleep_time = int(re.findall(r'Please retry after (\w+) second', message)[0])
+    #             sleep_time = min(sleep_time, max_wait_gpt4_time)
+    #             time.sleep(sleep_time + 1.0)
+    #         else:
+    #             action_str = llm_output['choices'][0]['message']['content']
+    #             action_list = []
+    #             predicted_observation = []
+    #             for i in action_str.split('The predicted current action is [')[1].split('],')[0].split(','):
+    #                 i = i.replace(']', '').strip()
+    #                 if i.isspace()==True :
+    #                     i = i.strip()
+    #                     action_list.append(float(i))
+    #                 else:
+    #                     action_list.append(float(i))
+    #             for i in action_str.split('The predicted next observation is [')[1].split('].')[0].split(','):
+    #                 i = i.replace(']', '').strip()
+    #                 if i.isspace()==True :
+    #                     i = i.strip()
+    #                     predicted_observation.append(float(i))
+    #                 else:
+    #                     predicted_observation.append(float(i))
+    #             action = np.array(action_list)
+    #             predicted_observation = np.array(predicted_observation)
+    #             time_step = train_env.step(action)
+    #             observation = np.array(time_step.observation)
+    #             count += 1
+    
+    #     else:
+    #         observation = time_step.observation
+    #         response = requests.post(API_ENDPOINT, json=get_input(obs=observation,action=action), headers=headers)
+    #         llm_output = response.json()
+    #         print(llm_output)
+    #         with open(save_path, "w") as file:
+    #             json.dump(response.json(), file)
+
+    #         # with open(save_path, "w") as file:
+    #         #     json.dump(response.json(), file)
+    #         if 'error' in llm_output:
+    #             message = llm_output['error']['message']
+    #             # print(message)
+    #             sleep_time = int(re.findall(r'Please retry after (\w+) second', message)[0])
+    #             sleep_time = min(sleep_time, max_wait_gpt4_time)
+    #             time.sleep(sleep_time + 1.0)
+    #         else:
+    #             action_str = llm_output['choices'][0]['message']['content']
+    #             action_list = []
+    #             for i in action_str.split('Output: [')[1].split('],')[0].split(','):
+    #                 i = i.replace(']', '').strip()
+    #                 i = i.replace('\n', '').strip()
+    #                 i = i.replace('.', '').strip()
+    #                 # 如果遇到\n就停止
+    #                 # TODO 有个可能出现的bug需要修复
+    #                 # if i.isspace('\n')==True :
+    #                 #     i = i.strip()
+    #                 #     action_list.append(float(i))
+    #                 # else:
+    #                 action_list.append(float(i))
+    #             action = np.array(action_list)
+    #             time_step = train_env.step(action)
+    #             observation = time_step.observation
+    #             observation = np.array(observation)
+    #             count += 1
 
         
 

@@ -16,7 +16,7 @@ You are the controller of a sawyer robot with 100 Hz. You can control the robot 
     Goal Position (Last 3 values): (x, y, z) coordinates of the goal position.
    
     
-    After we have the observation, we will infer about the action, and then output the action.
+    After we have the observation, we will infer about the action and next observationS, and then output the action.
 
     The action space is 4-dimensional, with all actions in range [−1, 1] with every number in action divide to ten decimal places. 
     The first three action dimensions correspond to the change in position of the gripper,
@@ -40,27 +40,36 @@ New task: Door-open
     {observation}
     The output format is as follows:
     The output format is as follows:
-    The previous action is [ , , , ], The predicted current action is [ , , , ], The predicted next observation is [ , , , ]. 
-    all numbers should be divided to 3 decimal places. be aware to follow the format and the  punctuation marks.
+    The previous action is [ , , , ], The predicted current action is [ , , , ], The predicted next observation is [ , , , ], all numbers should be divided to 3 decimal places.
 '''
 
-# self reflect 每次把pre obs和真实obs一起放进去，然后校准
+# interact prompt是没有更新history cash的版本
 
 interact_prompt = '''
-    The previous history is {previous_history}.
     The previous action is {previous_action}, the current obersvation is {current_observation}, please infer the next action and the next observation.
     The action is a 4-dim vector, and each dimension is a float number between -1 and 1.
     The output format is as follows:
-    The previous action is [ , , , ], The predicted current action is [ , , , ], The predicted next observation is [ , , , ]. 
-    all numbers should be divided to 3 decimal places.
+    The previous action is [ , , , ], The predicted current action is [ , , , ], The predicted next observation is [ , , , ], all numbers should be divided to 3 decimal places.
 '''
-# previous_action -> list of obs 
+
 
 CoT_prompt = '''
 The predicted observation is {predicted_observation}, the real observation is {real_observation}. 
-Please first describe what each observation means.
+Please first describe what each observation descibes. You may follow this format: The goal is to open a door with a revolving joint. 
+The real observation suggests that the door is closed. So we need to open it. To complete this task, we first need to get the gripper near the door. 
+Now the door is on the right and front of the gripper. So we need to move the gripper to the right and front.
 Then describe the difference between the predicted observation and the real observation.
 Finally try to explain why the difference occurs and output the next action.
+'''
+
+cot_prompt = '''
+The observation is {observation}. Please descibe what the observation indicates. 
+You may follow this format: 
+Our Goal: The goal is to open a door with a revolving joint. We need to get the gripper near the door. 
+The position of the objects: The door is on the right and front of the gripper.
+The possible movement: To move the gripper to the right and front.
+The possible action: The action is a 4-dim vector, and each dimension is a float number between -1 and 1. So the action is [ , , , ].
+
 '''
 
 demo_prompt = '''
